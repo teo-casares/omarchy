@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Use the same renderer test as the Omarchy session. An unreadable renderer
+# during compositor startup is retried by the user service.
+set -u
+[[ $(< /sys/class/dmi/id/product_sku) == Surface_Laptop_Ultra_2115 ]] || exit 0
+marker="${XDG_RUNTIME_DIR:?}/hypr/${HYPRLAND_INSTANCE_SIGNATURE:?}/omarchy-software-rendering"
+if [[ ! -s $marker ]]; then
+  timeout 10s omarchy-hw-software-rendering || {
+    result=$?
+    [[ $result == 1 ]] && exit 0
+    echo "Could not determine the session renderer" >&2
+    exit 1
+  }
+fi
+
+title="NVIDIA acceleration unavailable"
+body="Omarchy is running on the CPU. Graphics may be slower."
+read -ra args < /proc/cmdline
+for arg in "${args[@]}"; do
+  if [[ $arg == module_blacklist=* && ,${arg#*=}, == *,nvidia,* ]]; then
+    title="CPU desktop selected"
+    body="Omarchy is running on the CPU. NVIDIA is disabled for this boot."
+    break
+  fi
+done
+
+if [[ $title != "CPU desktop selected" ]] &&
+   journalctl -b -k -q -o cat -n 1 -g 'NVRM:.*(Cannot initialize GSP firmware RM|RmInitAdapter failed)' | grep -q .; then
+  title="NVIDIA GPU failed to start"
+  body="Omarchy switched to CPU rendering. You can keep working. The GPU startup error is in the boot journal."
+fi
+
+printf '%s. %s\n' "$title" "$body"
+gdbus wait --session --timeout 30 org.freedesktop.Notifications || exit 1
+exec notify-send --urgency=critical --expire-time=0 "$title" "$body"

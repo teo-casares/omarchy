@@ -21,7 +21,7 @@ Copy the files using these destinations, creating any missing directories. Compa
 | Source | Destination |
 | --- | --- |
 | Files under `system/` | Matching paths under `/etc/systemd/system/` |
-| Both scripts under `lib/` | Matching filenames under `/usr/local/lib/` |
+| `lib/surface-storage-evidence` and `lib/surface-firmware-evidence` | Matching filenames under `/usr/local/lib/` |
 | `tmpfiles.d/surface-gpu-evidence.conf` | `/etc/tmpfiles.d/surface-gpu-evidence.conf` |
 
 For persistent EFI panic capture on an Arch mkinitcpio installation, the kernel must provide EFI pstore and the system must expose writable EFI variable storage. The optional `modprobe.d/70-efi-crash-records.conf` enables the EFI pstore backend. The optional `mkinitcpio.conf.d/04-surface-efi-pstore.conf` requests early module inclusion. Copy them under `/etc/modprobe.d/` and `/etc/mkinitcpio.conf.d/` respectively. Use the machine's normal initramfs or unified kernel image build procedure and verify the resulting image includes `efi_pstore` and its module options before using that image. Custom boot image pipelines may require additional integration.
@@ -48,6 +48,21 @@ Some custom GRUB installations load `n1x_carveout_memmap` in the initramfs. This
 
 The optional `grub-recovery-carveout.patch` adds the helper to both module blacklists on menus where the text and fallback entries share `blacklist_args`. Before applying it, check that only the intended recovery entries reference this variable. Back up the active menu, apply the patch to a separate copy, run `grub-script-check` on that copy and inspect the diff before installing it. The kernel must receive the recovery entry's command line. A signed UKI with an embedded command line can ignore external arguments when Secure Boot is enabled.
 
-Before updating, save the ACPI IORT table, the kernel's physical memory map, EFI boot entries and a copy of the working boot images. Verify a rescue medium can unlock the Linux storage. After Windows finishes the firmware update, choose the text recovery entry on the first Linux boot. Check `/proc/cmdline` and `/sys/module/n1x_carveout_memmap` to confirm the blacklist took effect. Compare the new GPU reserved ranges, their device associations and the RAM map against the helper's assumptions before returning to accelerated graphics.
+Before updating, save the ACPI IORT table, the kernel's physical memory map, EFI boot entries and a copy of the working boot images. Verify a rescue medium can unlock the Linux storage. After Windows finishes the firmware update, choose a recovery entry that blocks the helper on the first Linux boot. Check `/proc/cmdline` and `/sys/module/n1x_carveout_memmap` to confirm the blacklist took effect. Compare the new GPU reserved ranges, their device associations and the RAM map against the helper's assumptions before returning to accelerated graphics.
 
 Microsoft publishes firmware versions and release notes for this model. [Surface Laptop Ultra update history](https://support.microsoft.com/en-us/surface/updates/surface-laptop-ultra-update-history)
+
+## Graphical CPU fallback
+
+Normal Omarchy tries NVIDIA first. On this Surface, a GPU initialization timeout has previously allowed Hyprland to start on the firmware framebuffer using Mesa llvmpipe. The optional `grub-recovery-cpu-desktop.patch` adds **Recovery → CPU desktop** to the custom GRUB menu described above. It uses the existing recovery blacklists and starts the graphical target. Apply it to a staged copy after the carveout patch, check the diff and run `grub-script-check`. Recovery highlights CPU desktop first. The main menu continues to highlight the normal Omarchy entry. If the kernel hangs completely, choose CPU desktop at the next boot.
+
+To show a GPU warning on graphical login for SKU `Surface_Laptop_Ultra_2115`, install the two user files and enable the unit from the diagnostics directory.
+
+```sh
+install -Dm755 lib/surface-gpu-fallback-notice ~/.local/libexec/surface-gpu-fallback-notice
+install -Dm644 user/surface-gpu-fallback-notice.service ~/.config/systemd/user/surface-gpu-fallback-notice.service
+systemctl --user daemon-reload
+systemctl --user enable --now surface-gpu-fallback-notice.service
+```
+
+The service uses Omarchy’s session renderer marker or its bundled renderer probe. A CPU session with a recorded NVIDIA initialization error shows a critical notification at login. A manually blacklisted GPU gets a separate informational message. A GPU-rendered session exits silently. The critical notification uses the default notify-send identity so Omarchy can display it during Do Not Disturb. The user journal records the message under `surface-gpu-fallback-notice.service`. To remove it, disable the user unit, delete these two files and reload the user manager.

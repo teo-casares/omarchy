@@ -1,0 +1,14 @@
+[Unit]
+Description=Report NVIDIA fallback to the CPU-rendered Surface desktop
+PartOf=graphical-session.target
+StartLimitIntervalSec=5min
+StartLimitBurst=3
+
+[Service]
+Type=exec
+ExecStart=%h/.local/libexec/surface-gpu-fallback-notice
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=graphical-session.target
