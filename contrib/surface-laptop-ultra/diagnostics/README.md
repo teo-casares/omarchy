@@ -104,3 +104,20 @@ systemctl --user enable --now surface-gpu-fallback-notice.service
 ```
 
 The service uses Omarchy’s session renderer marker or its bundled renderer probe. A CPU session with a recorded NVIDIA initialization error shows a critical notification at login. A manually blacklisted GPU gets a separate informational message. A GPU-rendered session exits silently. The critical notification uses the default notify-send identity so Omarchy can display it during Do Not Disturb. The user journal records the message under `surface-gpu-fallback-notice.service`. To remove it, disable the user unit, delete these two files and reload the user manager.
+
+## Surface clock at boot
+
+Run the clock probe from this directory on a Surface Laptop Ultra. The kernel needs to expose `/dev/surface/aggregator` through `surface_aggregator_cdev`. The device normally requires root. The probe sends two read-only request types and reports the system time, current EFI RTC, SAM Unix timestamp, and SAM calendar in one sample. [Linux SSAM userspace interface](https://github.com/torvalds/linux/blob/master/include/uapi/linux/surface_aggregator/cdev.h) · [linux-surface request reference](https://github.com/linux-surface/surface-aggregator-module/blob/master/doc/requests.txt)
+
+```sh
+sudo /usr/bin/python3 -I surface-rtc.py
+timedatectl show -p NTPSynchronized -p LocalRTC
+journalctl -k -b -o short-monotonic --grep='rtc-efi.*setting system clock'
+journalctl -b -u systemd-timesyncd -o short-monotonic --grep='Initial clock synchronization'
+```
+
+Offsets in the JSON are in seconds. Each pair gives the lower and upper bounds at whole-second resolution. For comparison, the probe converts the SAM calendar fields to epoch seconds as if they were UTC. A reported zone of 2047 means the controller left it unspecified. Compare the EFI RTC with system UTC when `LocalRTC=no` and NTP is synchronized. [ACPI calendar layout](https://uefi.org/specs/ACPI/6.5/09_ACPI_Defined_Devices_and_Device_Specific_Objects.html#grt-get-real-time)
+
+The kernel's `setting system clock` message captures the EFI time before userspace synchronization. To compare it with a later probe in the same boot, advance that recorded epoch by the elapsed time from the journal's monotonic timestamp to `sample_monotonic_window_s`. That comparison is approximate because firmware may have captured the RTC value earlier than the kernel logged it. Sample soon after boot and avoid suspend between the two readings. Save the same evidence on the next planned cold boot to test whether the initial EFI time follows the SAM calendar or the raw timestamp. A current EFI RTC reading near system UTC after NTP synchronization is expected even if the boot started with stale time.
+
+Keep firmware writes out of this procedure. On the Surface Pro 8, writing a correct Unix timestamp can leave the firmware calendar offset and carry that offset into the next cold boot. A Laptop Ultra repair needs a setter verified on this model, immediate readback of both SAM views, and a subsequent cold boot with the initial EFI time checked against trusted UTC. [Surface Pro 8 kernel test report](https://lkml.rescloud.iu.edu/hypermail/linux/kernel/2611.2/23555.html)
