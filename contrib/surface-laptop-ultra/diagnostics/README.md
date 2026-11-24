@@ -41,3 +41,13 @@ The suspend drop-ins apply to the next normal systemd suspend. The install and v
 ## Removal
 
 Disable any boot units you enabled for this installation with `sudo systemctl disable surface-boot-evidence.service surface-gpu-first-probe.service`. Remove files you added, restore any files replaced during installation and run `sudo systemctl daemon-reload`. If you installed the optional early panic capture configuration, restore the previous module settings and rebuild the same boot image through its normal pipeline. Previously collected journal entries and reports follow their configured retention policy.
+
+## Recovery across Surface firmware updates
+
+Some custom GRUB installations load `n1x_carveout_memmap` in the initramfs. This helper assumes specific physical memory ranges. If the firmware changes the memory map, a recovery entry that blocks only the graphics drivers can still load the helper.
+
+The optional `grub-recovery-carveout.patch` adds the helper to both module blacklists on menus where the text and fallback entries share `blacklist_args`. Before applying it, check that only the intended recovery entries reference this variable. Back up the active menu, apply the patch to a separate copy, run `grub-script-check` on that copy and inspect the diff before installing it. The kernel must receive the recovery entry's command line. A signed UKI with an embedded command line can ignore external arguments when Secure Boot is enabled.
+
+Before updating, save the ACPI IORT table, the kernel's physical memory map, EFI boot entries and a copy of the working boot images. Verify a rescue medium can unlock the Linux storage. After Windows finishes the firmware update, choose the text recovery entry on the first Linux boot. Check `/proc/cmdline` and `/sys/module/n1x_carveout_memmap` to confirm the blacklist took effect. Compare the new GPU reserved ranges, their device associations and the RAM map against the helper's assumptions before returning to accelerated graphics.
+
+Microsoft publishes firmware versions and release notes for this model. [Surface Laptop Ultra update history](https://support.microsoft.com/en-us/surface/updates/surface-laptop-ultra-update-history)
