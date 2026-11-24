@@ -7,20 +7,21 @@ These optional units capture evidence for intermittent NVIDIA startup failures o
 | The earliest matching NVIDIA, PCI, firmware-error and display events available when the boot collector runs, with kernel timestamps | `/var/log/surface-gpu-diagnostics/<boot-id>-first-probe.jsonl` |
 | ACPI boot-error bytes, selected EFI error variables, firmware update status and firmware timing counters | `journalctl -b -u surface-boot-evidence.service` |
 | Battery, thermal zone, watchdog and suspend counters before entry and when the suspend service returns, plus the first recorded wake IRQ when available | `journalctl -b -u systemd-suspend.service` |
+| Btrfs root device error counters and selected cached NVMe health counters at boot, before suspend and when the suspend service returns | Entries beginning with `Storage snapshot` in either unit journal |
 | EFI panic records when the kernel manages to write one | `/sys/fs/pstore/` or the archive configured for `systemd-pstore.service` |
 
-The GPU collector samples the kernel journal without opening a GPU device. The tmpfiles configuration sets 14-day age-based cleanup on the root-only report directory and enables kernel suspend/resume callback timing messages where supported. Firmware slots can contain records from earlier boots. A pre-suspend entry without a return records the last observable service phase. A hard power loss can leave the firmware and kernel with no opportunity to write a final record. Review collected data locally before sharing it.
+The GPU collector samples the kernel journal without opening a GPU device. The tmpfiles configuration sets 14-day age-based cleanup on the root-only report directory and enables kernel suspend/resume callback timing messages where supported. Firmware slots can contain records from earlier boots. A pre-suspend entry without a return records the last observable service phase. The NVMe SMART update timestamp identifies the cached UDisks sample. Compare the sample time and cumulative counters across captures to establish when UDisks observed a change. A hard power loss can leave the firmware and kernel with no opportunity to write a final record. Review collected data locally before sharing it.
 
 ## Installation
 
-Use this configuration on systems with systemd, a persistent journal, Bash and GNU coreutils. The platform-specific probes target NVIDIA at PCI address `000f:01:00.0`, battery `BAT1` and AC adapter `ADP1`. Missing optional sysfs fields are skipped.
+Use this configuration on systems with systemd, a persistent journal, Bash and GNU coreutils. The platform-specific probes target NVIDIA at PCI address `000f:01:00.0`, battery `BAT1` and AC adapter `ADP1`. Missing optional sysfs fields are skipped. The storage collector uses btrfs-progs for the root filesystem and busctl, jq and UDisks2 for the NVMe controller behind `nvme0n1`. UDisks2 must expose the controller SMART interface for those fields to appear.
 
-Copy the files using these destinations, creating any missing directories. Compare existing files first and save a copy of anything you replace. Install the shell collector with mode `0755` and configuration files with mode `0644`, all owned by root.
+Copy the files using these destinations, creating any missing directories. Compare existing files first and save a copy of anything you replace. Install the shell collectors with mode `0755` and configuration files with mode `0644`, all owned by root.
 
 | Source | Destination |
 | --- | --- |
 | Files under `system/` | Matching paths under `/etc/systemd/system/` |
-| `lib/surface-firmware-evidence` | `/usr/local/lib/surface-firmware-evidence` |
+| Both scripts under `lib/` | Matching filenames under `/usr/local/lib/` |
 | `tmpfiles.d/surface-gpu-evidence.conf` | `/etc/tmpfiles.d/surface-gpu-evidence.conf` |
 
 For persistent EFI panic capture on an Arch mkinitcpio installation, the kernel must provide EFI pstore and the system must expose writable EFI variable storage. The optional `modprobe.d/70-efi-crash-records.conf` enables the EFI pstore backend. The optional `mkinitcpio.conf.d/04-surface-efi-pstore.conf` requests early module inclusion. Copy them under `/etc/modprobe.d/` and `/etc/mkinitcpio.conf.d/` respectively. Use the machine's normal initramfs or unified kernel image build procedure and verify the resulting image includes `efi_pstore` and its module options before using that image. Custom boot image pipelines may require additional integration.
