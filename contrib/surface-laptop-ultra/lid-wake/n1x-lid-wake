@@ -1,0 +1,51 @@
+#!/bin/bash
+# Bag pressure on the Surface Laptop Ultra keyboard or touchpad can wake s2idle.
+# Mask those two input wake sources only when the lid is closed.
+
+devices=/sys/bus/i2c/devices
+state_dir=/run/n1x-lid-wake
+invocation=${INVOCATION_ID:-}
+[[ -n $invocation ]] || exit 0
+
+case "${1:-}" in
+  pre)
+    umask 077
+    mkdir -p "$state_dir" || exit 0
+    lid_closed=false
+    if grep -Eq '^state:[[:space:]]+closed[[:space:]]*$' /proc/acpi/button/lid/*/state 2>/dev/null; then
+      lid_closed=true
+    fi
+    for device in i2c-MSHW0794:00 i2c-MSHW0734:00; do
+      wakeup="$devices/$device/power/wakeup"
+      marker="$state_dir/$device"
+      # Keep the record if pre is repeated during the same service invocation.
+      if [[ -f $marker && $(<"$marker") == "$invocation" ]]; then
+        continue
+      fi
+      rm -f "$marker" || continue
+      [[ $lid_closed == "true" && -w $wakeup ]] || continue
+      read -r setting < "$wakeup" && [[ $setting == "enabled" ]] || continue
+
+      # Save the record first so an interrupted hook can still be unwound.
+      printf '%s\n' "$invocation" > "$marker" || continue
+      if printf 'disabled\n' > "$wakeup"; then
+        logger -t n1x-lid-wake "lid closed, disabled wake for $device"
+      else
+        rm -f "$marker"
+      fi
+    done
+    ;;
+  post)
+    for device in i2c-MSHW0794:00 i2c-MSHW0734:00; do
+      wakeup="$devices/$device/power/wakeup"
+      marker="$state_dir/$device"
+      [[ -f $marker && $(<"$marker") == "$invocation" ]] || continue
+      if [[ -w $wakeup ]]; then
+        printf 'enabled\n' > "$wakeup" || continue
+      fi
+      rm -f "$marker"
+    done
+    ;;
+esac
+
+exit 0

@@ -67,3 +67,66 @@ run_surface_setup x86_64 "$keyboard_setup" "pinctrl_tigerlake 32768 0" >/dev/nul
   fail "Surface keyboard setup lists the detected pinctrl module ahead of the Surface and Intel LPSS modules" "$(<"$module_list")"
 
 pass "Surface hardware setup applies Intel fixes only on x86_64"
+
+# Redirect the hook into fixtures so tests never access the host's wake settings.
+lid_hook="$ROOT/contrib/surface-laptop-ultra/lid-wake/n1x-lid-wake"
+lid="$scratch/proc/acpi/button/lid/LID0/state"
+devices="$scratch/sys/bus/i2c/devices"
+keyboard="$devices/i2c-MSHW0794:00/power/wakeup"
+touchpad="$devices/i2c-MSHW0734:00/power/wakeup"
+mkdir -p "${lid%/*}" "${keyboard%/*}" "${touchpad%/*}" "$scratch/run"
+sed -e "s|/proc/acpi/button/lid|$scratch/proc/acpi/button/lid|g" \
+  -e "s|/sys/bus/i2c/devices|$devices|g" \
+  -e "s|/run/n1x-lid-wake|$scratch/run/n1x-lid-wake|g" \
+  "$lid_hook" > "$scratch/lid-hook"
+
+run_lid_hook() (
+  logger() { :; }
+  export INVOCATION_ID=$2
+  source "$scratch/lid-hook" "$1" suspend
+)
+
+printf 'state:      open\n' > "$lid"
+printf 'disabled\n' > "$keyboard"
+printf 'enabled\n' > "$touchpad"
+run_lid_hook pre open
+run_lid_hook post open
+[[ $(<"$keyboard") == "disabled" && $(<"$touchpad") == "enabled" ]] ||
+  fail "an open-lid suspend preserves both input wake settings"
+
+printf 'state:      closed\n' > "$lid"
+run_lid_hook pre closed
+[[ $(<"$keyboard") == "disabled" && $(<"$touchpad") == "disabled" ]] ||
+  fail "a closed-lid suspend disables enabled input wake sources"
+run_lid_hook pre closed
+printf 'state:      open\n' > "$lid"
+run_lid_hook post closed
+[[ $(<"$keyboard") == "disabled" && $(<"$touchpad") == "enabled" ]] ||
+  fail "resume restores only the wake sources the hook disabled"
+
+printf 'state:      closed\n' > "$lid"
+rm "$keyboard"
+run_lid_hook pre interrupted
+[[ ! -e $keyboard && $(<"$touchpad") == "disabled" ]] ||
+  fail "a missing input device does not prevent disabling the other device"
+run_lid_hook post unrelated
+[[ ! -e $keyboard && $(<"$touchpad") == "disabled" ]] ||
+  fail "a post hook ignores wake settings saved by another invocation"
+rm "$lid"
+run_lid_hook pre unknown
+run_lid_hook post unknown
+[[ ! -e $keyboard && $(<"$touchpad") == "disabled" ]] ||
+  fail "an unreadable lid state leaves wake settings alone"
+run_lid_hook post interrupted
+[[ $(<"$touchpad") == "disabled" ]] ||
+  fail "a new pre hook discards stale records"
+
+printf 'state:      closed\n' > "$lid"
+printf 'enabled\n' > "$touchpad"
+run_lid_hook pre removed
+rm "$touchpad"
+run_lid_hook post removed
+[[ ! -e $keyboard && ! -e $touchpad ]] ||
+  fail "resume tolerates a removed wake source"
+
+pass "Surface lid wake preserves prior input wake settings"
