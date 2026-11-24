@@ -70,8 +70,33 @@ safe_stage_path() {
   [[ $suffix =~ ^[[:alnum:]]{6}$ ]]
 }
 
-# Check if hibernation is already configured
+SWAP_SUBVOLUME="/swap"
+configured=false
 if [[ -f $MKINITCPIO_CONF ]] && grep -q "^HOOKS+=(resume)$" "$MKINITCPIO_CONF"; then
+  configured=true
+fi
+
+if ! $configured && ! $FORCE; then
+  MEM_TOTAL_HUMAN=$(LC_ALL=C free --human | awk '/Mem/ {print $2}')
+  if ! gum confirm "Use $MEM_TOTAL_HUMAN on boot drive to make hibernation available?"; then
+    exit 0
+  fi
+fi
+
+# A mount source or shared filesystem UUID does not identify the member
+# containing the swapfile on multi-device Btrfs.
+swap_filesystem=$SWAP_SUBVOLUME
+[[ -d $swap_filesystem ]] || swap_filesystem=/
+if ! filesystem_info=$(sudo env LC_ALL=C btrfs filesystem show "$swap_filesystem"); then
+  echo "Could not inspect the Btrfs filesystem for the hibernation swapfile" >&2
+  exit 1
+fi
+if [[ $(awk '$1 == "Total" && $2 == "devices" {print $3}' <<<"$filesystem_info") != 1 ]]; then
+  echo "Hibernation setup requires single-device Btrfs; it cannot select a resume device on multi-device Btrfs" >&2
+  exit 1
+fi
+
+if $configured; then
   # Fix empty resume_offset if btrfs map-swapfile failed during initial setup
   if [[ -f $RESUME_DROP_IN ]] && grep -q 'resume_offset="$' "$RESUME_DROP_IN" && [[ -f $SWAP_FILE ]]; then
     RESUME_OFFSET=$(sudo btrfs inspect-internal map-swapfile -r "$SWAP_FILE" 2>/dev/null)
@@ -86,15 +111,6 @@ if [[ -f $MKINITCPIO_CONF ]] && grep -q "^HOOKS+=(resume)$" "$MKINITCPIO_CONF"; 
   echo "Hibernation is already set up"
   exit 0
 fi
-
-if ! $FORCE; then
-  MEM_TOTAL_HUMAN=$(LC_ALL=C free --human | awk '/Mem/ {print $2}')
-  if ! gum confirm "Use $MEM_TOTAL_HUMAN on boot drive to make hibernation available?"; then
-    exit 0
-  fi
-fi
-
-SWAP_SUBVOLUME="/swap"
 
 # Create btrfs subvolume for swap
 if ! sudo btrfs subvolume show "$SWAP_SUBVOLUME" &>/dev/null; then
