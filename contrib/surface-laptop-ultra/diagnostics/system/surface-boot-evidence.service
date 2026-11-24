@@ -1,0 +1,17 @@
+[Unit]
+Description=Record Surface firmware, graphics and power state in the boot journal
+After=systemd-journal-flush.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/uname -r
+ExecStart=-/usr/bin/grep -H . /sys/class/dmi/id/bios_version /sys/class/watchdog/watchdog0/bootstatus /sys/power/mem_sleep /sys/class/power_supply/BAT1/capacity /sys/class/power_supply/BAT1/status /sys/bus/pci/devices/000f:01:00.0/power_state
+ExecStart=-/usr/bin/ls -1 /sys/class/drm/ /sys/class/backlight/
+ExecStart=/usr/bin/sh -c "if test -r /sys/firmware/acpi/tables/data/BERT; then od -An -tx1 -v /sys/firmware/acpi/tables/data/BERT; fi"
+ExecStart=-/usr/bin/timeout 5s /usr/bin/journalctl --sync
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

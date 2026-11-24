@@ -1,0 +1,21 @@
+[Unit]
+Description=Preserve the earliest Surface graphics kernel events with their original timestamps
+After=systemd-journal-flush.service
+Before=surface-gpu-report.service
+
+[Service]
+Type=oneshot
+LogsDirectory=surface-gpu-diagnostics
+LogsDirectoryMode=0700
+WorkingDirectory=/var/log/surface-gpu-diagnostics
+UMask=0077
+TimeoutStartSec=30s
+LimitFSIZE=1M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+ExecStart=/usr/bin/sh -ec '/usr/bin/journalctl --quiet --no-pager --dmesg --boot=0 --lines=+128 --case-sensitive=no --grep="NVRM:|nvidia[-_]drm|n1x_carveout|000f:01:00[.]0|BERT:|Hardware Error|simpledrm|simple-framebuffer|(smmu|iommu).*(translation fault|page fault|error)" --output=json --output-fields=MESSAGE,PRIORITY,_SOURCE_MONOTONIC_TIMESTAMP,_SOURCE_BOOTTIME_TIMESTAMP > %b-first-probe.partial && test -s %b-first-probe.partial && /usr/bin/mv -f %b-first-probe.partial %b-first-probe.jsonl'
+
+[Install]
+WantedBy=multi-user.target
