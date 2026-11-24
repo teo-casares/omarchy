@@ -120,8 +120,8 @@ def gpu_ranges(nodes, target, sid):
     return tuple(sorted(ranges))
 
 
-def ram_intervals(path):
-    ram = []
+def memory_resources(path):
+    resources = []
     for line in path.read_text().splitlines():
         if not line.strip():
             continue
@@ -131,11 +131,11 @@ def ram_intervals(path):
         first, last = (int(value, 16) for value in match.groups()[:2])
         if first > last or last >= 1 << 64:
             raise ValueError("invalid /proc/iomem interval")
-        if match[3] == "System RAM":
-            ram.append((first, last))
+        resources.append((first, last, match[3]))
+    ram = sorted((first, last) for first, last, name in resources if name == "System RAM")
     if not ram or any(last == 0 for _, last in ram):
         raise ValueError("System RAM addresses are unavailable or masked")
-    return sorted(ram)
+    return resources, ram
 
 
 def describe_interval(interval):
@@ -153,7 +153,7 @@ def evidence(label, iort, iomem, segment, requester):
     print(f"{label}: segment {segment:04x}, requester {requester:#06x} -> "
           f"{'SMMUv3' if kind == SMMUV3 else 'SMMUv1/v2'} {base:#x}, stream {sid:#x}")
     ranges = gpu_ranges(nodes, target, sid)
-    ram = ram_intervals(iomem)
+    resources, ram = memory_resources(iomem)
     overlaps = []
     for first, last, flags, sid_first, sid_last in ranges:
         hits = ram_overlap(first, last, ram)
@@ -164,10 +164,24 @@ def evidence(label, iort, iomem, segment, requester):
     if not ranges:
         print("  No RMR associated with this SMMU stream")
     helper_hits = tuple(ram_overlap(first, last, ram) for first, last in HELPER_RANGES)
+    neighbors = []
+    claims = []
     for interval, hits in zip(HELPER_RANGES, helper_hits):
+        low, high = interval
+        below = max((end for _, end in ram if end < low), default=None)
+        above = min((start for start, _ in ram if start > high), default=None)
+        neighbors.append((below, above))
+        # Compare resource identity privately; names can include local paths.
+        occupied = sorted((start, end, name) for start, end, name in resources
+                          if name != "System RAM" and start <= high and end >= low)
+        claims.append(occupied)
         print(f"  Helper {describe_interval(interval)}, System RAM overlap: "
               f"{', '.join(map(describe_interval, hits)) or 'none listed'}")
-    return route, ranges, tuple(overlaps), helper_hits
+        print(f"    Nearest System RAM below/above: "
+              f"{hex(below) if below is not None else 'none'}/"
+              f"{hex(above) if above is not None else 'none'}; "
+              f"other overlapping resource entries: {len(occupied)}")
+    return route, ranges, tuple(overlaps), helper_hits, neighbors, claims
 
 
 def main():
@@ -200,7 +214,8 @@ def main():
     if changed:
         print("Changed: " + ", ".join(
             name for name, old, new in zip(
-                ("SMMU route", "GPU RMRs", "RMR System RAM overlap", "helper System RAM overlap"),
+                ("SMMU route", "GPU RMRs", "RMR System RAM overlap", "helper System RAM overlap",
+                 "neighboring RAM boundaries", "overlapping resource entries"),
                 before, after,
             ) if old != new
         ))
@@ -209,10 +224,11 @@ def main():
         return 1
     if changed:
         return 1
-    if not before[1]:
-        print("Unknown: both captures lack an RMR for this GPU stream")
+    if not all(any(start <= low and high <= end for start, end, *_ in before[1])
+               for low, high in HELPER_RANGES):
+        print("Unknown: the GPU RMRs do not cover both complete helper intervals")
         return 2
-    print("Unchanged: selected IORT mapping, RMRs, and listed System RAM overlaps")
+    print("Unchanged: selected IORT mapping, RMRs, RAM boundaries and overlapping resources")
     return 0
 
 

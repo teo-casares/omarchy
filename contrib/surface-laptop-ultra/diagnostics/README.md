@@ -71,12 +71,13 @@ stream on the IORT SMMU, and selects RMR descriptors on that same SMMU whose
 output stream ranges include the GPU stream. It reports inclusive physical
 intervals and intersects them with the listed System RAM. It also checks both
 hard-coded helper intervals separately, since the helper maps only part of the
-lower RMR and skips another RMR entirely. The output omits unrelated resource
-names and the input file paths.
+lower RMR and skips another RMR entirely. For each helper interval it compares
+the nearest RAM boundaries on either side and the addresses and names of other
+overlapping resources. The output omits resource names and input file paths.
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | Selected firmware mapping, RMRs and listed RAM overlaps agree |
+| 0 | Both helper ranges have GPU RMR coverage and the selected mapping, RAM boundaries and overlapping resources agree |
 | 1 | Selected evidence changed, or a helper interval intersects System RAM |
 | 2 | Incomplete or unsupported evidence, including masked addresses or an unresolved requester |
 
