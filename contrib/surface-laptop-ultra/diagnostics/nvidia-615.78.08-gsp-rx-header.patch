@@ -1,0 +1,23 @@
+--- a/src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
++++ b/src/nvidia/src/kernel/gpu/gsp/message_queue_cpu.c
+@@ -413,6 +413,20 @@
+         NV_PRINTF(LEVEL_ERROR,
+             "msgqRxLink failed: %d, nvStatus 0x%08x, retries: %d\n",
+             nRet, nvStatus, nRetries);
++        // msgqRxLink returns -7 after copying the peer header and checking its size.
++        if (nRet == -7)
++        {
++            const msgqMetadata *pQueue = (const msgqMetadata *)(*ppMQI)->hQueue;
++            const msgqTxHeader *pHeader = &pQueue->rx;
++
++            NV_PRINTF(LEVEL_ERROR,
++                "GSP RX header: size %u expected %u, msgSize %u expected %u, "
++                "entryOff %u, msgCount %u, version %u.%u\n",
++                pHeader->size, (NvU32)(*ppMQI)->statusQueueSize,
++                pHeader->msgSize, (NvU32)(*ppMQI)->queueElementSizeMin,
++                pHeader->entryOff, pHeader->msgCount,
++                pHeader->versionMajor, pHeader->versionMinor);
++        }
+         _gspMsgQueueCleanup(*ppMQI);
+     }
+ 

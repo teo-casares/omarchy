@@ -104,3 +104,29 @@ systemctl --user enable --now surface-gpu-fallback-notice.service
 ```
 
 The service uses Omarchy’s session renderer marker or its bundled renderer probe. A CPU session with a recorded NVIDIA initialization error shows a critical notification at login. A manually blacklisted GPU gets a separate informational message. A GPU-rendered session exits silently. The critical notification uses the default notify-send identity so Omarchy can display it during Do Not Disturb. The user journal records the message under `surface-gpu-fallback-notice.service`. To remove it, disable the user unit, delete these two files and reload the user manager.
+
+## GSP receive-queue timeout on driver 615.78.08
+
+When the first NVIDIA probe logs `msgqRxLink failed: -7`, the driver compared
+a cached copy of the GSP receive header with the expected queue size. The
+stock error omits the observed value. The optional
+`nvidia-615.78.08-gsp-rx-header.patch` adds the observed and expected sizes,
+entry offset, entry count and protocol version to the final error path. It
+reads the host copy from the last link attempt, before cleanup. Polling, the
+timeout and the return value are unchanged.
+
+Apply the patch only to a separate diagnostic build of NVIDIA open kernel
+modules 615.78.08. The changed translation unit can be checked on ARM64
+without installing a module:
+
+```sh
+# In the NVIDIA 615.78.08 source tree; set PATCH to the absolute patch path.
+git apply --check "$PATCH" && git apply "$PATCH"
+make -C src/nvidia _out/Linux_aarch64/message_queue_cpu.o
+```
+
+During an authorized test of that build, look for `GSP RX header` following
+the first size mismatch in the monotonic kernel journal. An all-zero header
+leaves both firmware publication and host visibility in question. Nonzero
+fields establish what the host actually saw, and can be compared against the
+queue layout. A hardware failure is needed to validate the observation.
