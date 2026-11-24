@@ -11,6 +11,7 @@ Multi-finger clickpad presses pass straight through (libinput's clickfinger).
 Env: LPRC_HOLD_MS (default 600), LPRC_SLOP_MM (touchpad, default 2.0),
      LPRC_SLOP_COUNTS (mouse, default 10).
 """
+from contextlib import closing
 import glob
 import os
 import selectors
@@ -132,24 +133,34 @@ def main():
     sel = selectors.DefaultSelector()
     devs = {}
     frames = {}
+    ignored = {}
     next_scan = 0
     while True:
         now = time.monotonic()
         if now >= next_scan:
             next_scan = now + 3
-            for path in glob.glob("/dev/input/event*"):
+            paths = glob.glob("/dev/input/event*")
+            for missing in ignored.keys() - paths:
+                del ignored[missing]
+            for path in paths:
                 if path in devs:
                     continue
                 try:
-                    probe = evdev.InputDevice(path)
-                    ok = wanted(probe)
-                    probe.close()
-                    if ok:
-                        d = Dev(path)
-                        devs[path] = d
-                        frames[path] = []
-                        sel.register(d.src, selectors.EVENT_READ, path)
-                        print(f"grabbed {path}: {d.src.name}", flush=True)
+                    # Closing an evdev fd can block this forwarding loop on an RCU
+                    # grace period. Probe a rejected device only once per lifetime.
+                    identity = os.readlink("/sys/class/input/" + os.path.basename(path))
+                    if ignored.get(path) == identity:
+                        continue
+                    with closing(evdev.InputDevice(path)) as probe:
+                        ok = wanted(probe)
+                    if not ok:
+                        ignored[path] = identity
+                        continue
+                    d = Dev(path)
+                    devs[path] = d
+                    frames[path] = []
+                    sel.register(d.src, selectors.EVENT_READ, path)
+                    print(f"grabbed {path}: {d.src.name}", flush=True)
                 except OSError:
                     pass
         deadlines = [d.deadline for d in devs.values() if d.state == "pending"]
