@@ -1,0 +1,10 @@
+--- a/grub.cfg
++++ b/grub.cfg
+@@ -69,2 +69,7 @@
+     set timeout=-1
++    set default=omarchy-cpu
++    menuentry "CPU desktop" --id omarchy-cpu {
++        chainloader /EFI/Linux/omarchy_linux-omarchy.efi $root_args $hw_args $blacklist_args $power_args power_wrap_drv.usb4_release=0 systemd.unit=graphical.target quiet loglevel=2 systemd.show_status=false
++    }
++
+     menuentry "Text console" --id omarchy-text {
