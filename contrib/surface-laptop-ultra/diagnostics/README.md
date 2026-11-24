@@ -52,6 +52,44 @@ Before updating, save the ACPI IORT table, the kernel's physical memory map, EFI
 
 Microsoft publishes firmware versions and release notes for this model. [Surface Laptop Ultra update history](https://support.microsoft.com/en-us/surface/updates/surface-laptop-ultra-update-history)
 
+On the recovery boot, compare the saved pre-update captures with the current
+kernel's IORT table and physical memory map. Run from this diagnostics directory
+and substitute the paths to your saved binary IORT and unredacted `/proc/iomem`.
+
+```bash
+sudo ./lib/surface-gpu-carveout-compare before-IORT.bin before-iomem.txt \
+  /sys/firmware/acpi/tables/IORT /proc/iomem
+```
+
+The tool defaults to the Surface GPU at `000f:01:00.0`. Verify the PCI address
+with `lspci -Dn` in both captures. Use `--gpu` if the same GPU is at another
+address in both boots. If enumeration changed between boots, review the
+mapping manually.
+
+The comparison derives the requester ID from the PCI address, resolves its
+stream on the IORT SMMU, and selects RMR descriptors on that same SMMU whose
+output stream ranges include the GPU stream. It reports inclusive physical
+intervals and intersects them with the listed System RAM. It also checks both
+hard-coded helper intervals separately, since the helper maps only part of the
+lower RMR and skips another RMR entirely. For each helper interval it compares
+the nearest RAM boundaries on either side and the addresses and names of other
+overlapping resources. The output omits resource names and input file paths.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Both helper ranges have GPU RMR coverage and the selected mapping, RAM boundaries and overlapping resources agree |
+| 1 | Selected evidence changed, or a helper interval intersects System RAM |
+| 2 | Incomplete or unsupported evidence, including masked addresses or an unresolved requester |
+
+This check covers direct PCI requester-to-SMMU mappings. DMA aliases,
+runtime page ownership, EFI descriptors and memmap presence require independent
+evidence. An exit of 0 only describes the compared captures. Keep the helper
+blacklisted while investigating changed or unknown results.
+
+The binary layout is documented in [Arm DEN0049](https://documentation-service.arm.com/static/68c159178a337a2bc6645aea?token=).
+Linux uses the SMMU node and an inclusive output StreamID range to associate
+RMR nodes with devices. [Linux IORT implementation](https://github.com/torvalds/linux/blob/master/drivers/acpi/arm64/iort.c)
+
 ## Graphical CPU fallback
 
 Normal Omarchy tries NVIDIA first. On this Surface, a GPU initialization timeout has previously allowed Hyprland to start on the firmware framebuffer using Mesa llvmpipe. The optional `grub-recovery-cpu-desktop.patch` adds **Recovery → CPU desktop** to the custom GRUB menu described above. It uses the existing recovery blacklists and starts the graphical target. Apply it to a staged copy after the carveout patch, check the diff and run `grub-script-check`. Recovery highlights CPU desktop first. The main menu continues to highlight the normal Omarchy entry. If the kernel hangs completely, choose CPU desktop at the next boot.
