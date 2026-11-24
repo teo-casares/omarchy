@@ -104,3 +104,21 @@ systemctl --user enable --now surface-gpu-fallback-notice.service
 ```
 
 The service uses Omarchy’s session renderer marker or its bundled renderer probe. A CPU session with a recorded NVIDIA initialization error shows a critical notification at login. A manually blacklisted GPU gets a separate informational message. A GPU-rendered session exits silently. The critical notification uses the default notify-send identity so Omarchy can display it during Do Not Disturb. The user journal records the message under `surface-gpu-fallback-notice.service`. To remove it, disable the user unit, delete these two files and reload the user manager.
+
+## ACPI thermal evidence across firmware updates
+
+On the affected Surface firmware, ten ACPI zones register without Linux thermal trip points. Eight report SoC temperatures. PSYS and PSOC read power telemetry through the same interface. The Surface Aggregator thermistors and fan RPM use separate hwmon drivers.
+
+Capture the loaded AML and runtime trip metadata on the known-good pre-update boot and again on the first Linux recovery boot after the update. From this diagnostics directory, use a private working directory and distinct paths for each capture.
+
+```bash
+umask 077
+sudo ./lib/surface-thermal-evidence --save-aml before-aml > before-thermal.json
+# On the recovery boot after the update
+sudo ./lib/surface-thermal-evidence --save-aml after-aml > after-thermal.json
+diff -u before-thermal.json after-thermal.json
+```
+
+Each capture validates the DSDT and visible static and dynamic SSDT headers, retains their SHA-256 digests and OEM identities, and lists kernel trips by ACPI namespace path. This keeps Linux zone numbering and SSDT enumeration order out of the comparison. Empty lists mean Linux exposed no trip points for those zones at capture time. Only compare successful captures. Use the same kernel and ACPI boot options on both boots when attributing trip changes to firmware. Record the BIOS version and check the kernel journal for ACPI table upgrades or overrides.
+
+Use ACPICA's `iasl -da` on the archived DSDT and its companion SSDTs together in a scratch directory to disassemble them with the shared namespace. Table filenames use the hashes from the JSON. Inspect changed thermal zone bodies, especially `_CRT`, `_HOT`, `_PSV` and `_AC0`–`_AC9`. An AML change alone does not establish that Linux accepted a trip. The runtime list measures what Linux exposed. The capture does not exercise a trip, verify firmware or EC shutdown protection, or change temperatures, fan settings or thermal policy.

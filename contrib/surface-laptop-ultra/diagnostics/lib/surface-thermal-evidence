@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Capture ACPI thermal definitions and kernel trip metadata without evaluating AML."""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import struct
+import sys
+
+
+def table_evidence(root, output):
+    tables = []
+    files = [root / "DSDT", *sorted(root.glob("SSDT*")),
+             *sorted((root / "dynamic").glob("SSDT*"))]
+    for path in files:
+        data = path.read_bytes()
+        signature = b"DSDT" if path.name == "DSDT" else b"SSDT"
+        if (len(data) < 36 or data[:4] != signature
+                or struct.unpack_from("<I", data, 4)[0] != len(data)
+                or sum(data) % 256):
+            raise ValueError(f"invalid ACPI table {path}")
+        digest = hashlib.sha256(data).hexdigest()
+        if output is not None:
+            (output / f"{digest}.aml").write_bytes(data)
+        tables.append({
+            "signature": signature.decode(),
+            "oem_id": data[10:16].decode("ascii").rstrip(),
+            "oem_table_id": data[16:24].decode("ascii").rstrip(),
+            "oem_revision": struct.unpack_from("<I", data, 24)[0],
+            "load": "dynamic" if path.parent.name == "dynamic" else "static",
+            "sha256": digest,
+        })
+    return sorted(tables, key=lambda table: (
+        table["signature"], table["oem_id"], table["oem_table_id"],
+        table["load"], table["oem_revision"], table["sha256"],
+    ))
+
+
+def trip_evidence(root):
+    zones = {}
+    for zone in sorted(root.glob("thermal_zone*")):
+        if (zone / "type").read_text().strip() != "acpitz":
+            continue
+        path = (zone / "device/path").read_text().strip()
+        if not path or path in zones:
+            raise ValueError(f"missing or duplicate ACPI namespace path in {zone}")
+        trips = []
+        attributes = (*zone.glob("trip_point_*_type"), *zone.glob("trip_point_*_temp"))
+        indices = {
+            int(match[1])
+            for attribute in attributes
+            if (match := re.fullmatch(r"trip_point_([0-9]+)_(type|temp)", attribute.name))
+        }
+        for index in sorted(indices):
+            kind = (zone / f"trip_point_{index}_type").read_text().strip()
+            temp = int((zone / f"trip_point_{index}_temp").read_text())
+            trips.append({"type": kind, "millicelsius": temp})
+        zones[path] = sorted(trips, key=lambda trip: (trip["type"], trip["millicelsius"]))
+    if not zones:
+        raise ValueError(f"no ACPI thermal zones in {root}")
+    return zones
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--acpi-tables", type=Path, default=Path("/sys/firmware/acpi/tables"))
+    parser.add_argument("--thermal-zones", type=Path, default=Path("/sys/class/thermal"))
+    parser.add_argument("--save-aml", type=Path, help="create a directory containing the raw AML tables")
+    args = parser.parse_args()
+    try:
+        zones = trip_evidence(args.thermal_zones)
+        if args.save_aml is not None:
+            args.save_aml.mkdir(mode=0o700)
+        tables = table_evidence(args.acpi_tables, args.save_aml)
+    except (OSError, ValueError) as error:
+        print(f"{parser.prog}: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps({"tables": tables, "acpi_zones": zones}, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
