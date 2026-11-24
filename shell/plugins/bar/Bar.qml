@@ -1590,6 +1590,13 @@ Item {
     WlrLayershell.namespace: "omarchy-bar"
     WlrLayershell.layer: WlrLayer.Top
 
+    // Claim unhandled right presses before Qt synthesizes a context-menu
+    // event on the unfocused bar (QTBUG-146671, still present in Qt 6.12).
+    MouseArea {
+      anchors.fill: parent
+      acceptedButtons: Qt.RightButton
+    }
+
     Loader {
       anchors.fill: parent
       sourceComponent: root.vertical ? verticalBar : horizontalBar
