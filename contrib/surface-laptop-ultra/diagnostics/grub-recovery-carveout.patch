@@ -1,0 +1,7 @@
+--- a/grub.cfg
++++ b/grub.cfg
+@@ -49,3 +49,3 @@
+ export hw_args
+-set blacklist_args="modprobe.blacklist=gpio_keys,nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nvidia_peermem,nouveau module_blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nvidia_peermem,nouveau nvidia_drm.modeset=0"
++set blacklist_args="modprobe.blacklist=gpio_keys,nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nvidia_peermem,nouveau,n1x_carveout_memmap module_blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nvidia_peermem,nouveau,n1x_carveout_memmap nvidia_drm.modeset=0"
+ export blacklist_args
