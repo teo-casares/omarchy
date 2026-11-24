@@ -1,0 +1,106 @@
+diff --git c/tools/server/server-memory-admission.h w/tools/server/server-memory-admission.h
+new file mode 100644
+index 00000000..88649f83
+--- /dev/null
++++ w/tools/server/server-memory-admission.h
+@@ -0,0 +1,48 @@
++#pragma once
++
++#include <charconv>
++#include <cstdint>
++#include <istream>
++#include <sstream>
++#include <string>
++#include <string_view>
++
++inline std::string server_check_model_memory(std::string_view minimum, std::istream & meminfo) {
++    if (minimum.empty()) {
++        return {};
++    }
++
++    uint64_t required_mib = 0;
++    const auto end = minimum.data() + minimum.size();
++    const auto parsed = std::from_chars(minimum.data(), end, required_mib);
++    if (parsed.ec != std::errc{} || parsed.ptr != end || required_mib == 0) {
++        return "LLAMA_SERVER_MIN_AVAILABLE_MIB must be a positive integer";
++    }
++
++    for (std::string line; std::getline(meminfo, line);) {
++        if (line.rfind("MemAvailable:", 0) != 0) {
++            continue;
++        }
++
++        uint64_t available_kib;
++        std::string field, amount, unit, extra;
++        std::istringstream entry(line);
++        if (!(entry >> field >> amount >> unit) || field != "MemAvailable:" || unit != "kB" || (entry >> extra)) {
++            break;
++        }
++        const auto amount_end = amount.data() + amount.size();
++        const auto available = std::from_chars(amount.data(), amount_end, available_kib);
++        if (available.ec != std::errc{} || available.ptr != amount_end) {
++            break;
++        }
++
++        const uint64_t available_mib = available_kib / 1024;
++        if (available_mib < required_mib) {
++            return "model load deferred: " + std::to_string(available_mib) +
++                   " MiB available, requires " + std::to_string(required_mib) + " MiB";
++        }
++        return {};
++    }
++
++    return "cannot read MemAvailable from /proc/meminfo";
++}
+diff --git c/tools/server/server.cpp w/tools/server/server.cpp
+index e022355d..b50c6de6 100644
+--- c/tools/server/server.cpp
++++ w/tools/server/server.cpp
+@@ -1,7 +1,8 @@
+ #include "server-connect.h"
+ #include "server-context.h"
+ #include "server-http.h"
++#include "server-memory-admission.h"
+ #include "server-models.h"
+ #include "server-cors-proxy.h"
+ #include "server-stream.h"
+ #include "server-tools.h"
+@@ -16,8 +17,9 @@
+ #include <algorithm>
+ #include <atomic>
+ #include <clocale>
+ #include <exception>
++#include <fstream>
+ #include <mutex>
+ #include <signal.h>
+ #include <thread> // for std::thread::hardware_concurrency
+ #include <unordered_map>
+@@ -741,13 +743,26 @@ static int server_run_instance(common_params & params, server_role & role, commo
+     });
+
+     notify_status(SERVER_MODEL_STATUS_LOADING);
+
+-    if (!ctx_server.load_model(params)) {
++    // The router starts an instance for each fresh load, including a switch to another model.
++    // Use host memory on UMA, where a service cgroup can miss GPU allocations.
++    const auto min_available_mib = common_get_env("LLAMA_SERVER_MIN_AVAILABLE_MIB");
++    std::string admission_error;
++    if (!min_available_mib.empty()) {
++        std::ifstream meminfo("/proc/meminfo");
++        admission_error = server_check_model_memory(min_available_mib, meminfo);
++    }
++
++    if (!admission_error.empty() || !ctx_server.load_model(params)) {
+         notify_status(SERVER_MODEL_STATUS_UNLOADED, {{"exit_code", 1}});
+         clean_up();
+         ctx_http.join();
+-        SRV_ERR("%s", "exiting due to model loading error\n");
++        if (admission_error.empty()) {
++            SRV_ERR("%s", "exiting due to model loading error\n");
++        } else {
++            SRV_ERR("%s\n", admission_error.c_str());
++        }
+         return 1;
+     }
+
+     routes.update_meta(ctx_server);
