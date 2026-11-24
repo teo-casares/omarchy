@@ -1,0 +1,29 @@
+#!/bin/bash
+# Read the firmware's current-boot views; retained slots may describe older boots.
+set -u
+shopt -s nullglob
+vars=/sys/firmware/efi/efivars
+records=(
+    "$vars"/HwErrRec[[:xdigit:]][[:xdigit:]][[:xdigit:]][[:xdigit:]]-414e6bdd-e47b-47cc-b244-bb61020cf516
+    "$vars"/BugCheck*-ba57e015-65b3-4c3c-b274-659192f699e3
+    "$vars"/VarErrorFlag-04b37fe8-f6ae-480b-bdd5-37d98c5e89aa
+    "$vars"/DebugInfo-3afd9e7e-7f60-40d6-846a-211b05685fc0
+)
+printf 'Firmware variable data (base64, including the four EFI attribute bytes)\n'
+for file in "${records[@]}"; do
+    [[ -e $file ]] || continue
+    printf 'BEGIN %s\n' "${file##*/}"
+    if base64 --wrap=1000 "$file"; then
+        printf 'END %s\n' "${file##*/}"
+    else
+        printf 'READ FAILED %s\n' "${file##*/}"
+    fi
+done
+for entry in /sys/firmware/efi/esrt/entries/*; do
+    [[ -d $entry ]] || continue
+    grep -H . "$entry"/{fw_class,fw_version,last_attempt_version,last_attempt_status}
+done
+for file in /sys/firmware/acpi/fpdt/{boot,resume,suspend}/*; do
+    [[ -f $file ]] && grep -H . "$file"
+done
+exit 0

@@ -1,0 +1,12 @@
+#!/bin/bash
+set -eu -o pipefail
+echo "Storage snapshot phase=${1:-manual}"
+btrfs device stats /
+bus=org.freedesktop.UDisks2
+block=/org/freedesktop/UDisks2/block_devices/nvme0n1
+interface=org.freedesktop.UDisks2.NVMe.Controller
+drive=$(busctl --timeout=1s --json=short get-property "$bus" "$block" "$bus.Block" Drive | jq -er '.data | select(. != "/")')
+sample=$(busctl --timeout=1s --json=short get-property "$bus" "$drive" "$interface" SmartUpdated | jq -er '.data | select(. > 0)')
+busctl --timeout=1s --json=short call "$bus" "$drive" "$interface" SmartGetAttributes 'a{sv}' 0 |
+  jq -ec --argjson sampled "$sample" '.data[0] | with_entries(.value = .value.data) |
+    {smart_updated_epoch: $sampled, power_cycles, unsafe_shutdowns, media_errors, num_err_log_entries, percent_used, avail_spare}'
