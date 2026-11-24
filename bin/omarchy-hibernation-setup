@@ -70,10 +70,29 @@ safe_stage_path() {
   [[ $suffix =~ ^[[:alnum:]]{6}$ ]]
 }
 
+SWAP_SUBVOLUME="/swap"
+
+require_single_device_swap_filesystem() {
+  local swap_filesystem=$SWAP_SUBVOLUME filesystem_info
+  [[ -d $swap_filesystem ]] || swap_filesystem=/
+  if ! filesystem_info=$(sudo env LC_ALL=C btrfs filesystem show "$swap_filesystem"); then
+    echo "Could not inspect the Btrfs filesystem for the hibernation swapfile" >&2
+    return 1
+  fi
+
+  # The mount source and filesystem UUID cannot identify the member
+  # containing the swapfile on multi-device Btrfs.
+  if [[ $(awk '$1 == "Total" && $2 == "devices" {print $3}' <<<"$filesystem_info") != 1 ]]; then
+    echo "Hibernation setup requires single-device Btrfs to derive resume parameters; it cannot select a resume device on multi-device Btrfs" >&2
+    return 1
+  fi
+}
+
 # Check if hibernation is already configured
 if [[ -f $MKINITCPIO_CONF ]] && grep -q "^HOOKS+=(resume)$" "$MKINITCPIO_CONF"; then
   # Fix empty resume_offset if btrfs map-swapfile failed during initial setup
   if [[ -f $RESUME_DROP_IN ]] && grep -q 'resume_offset="$' "$RESUME_DROP_IN" && [[ -f $SWAP_FILE ]]; then
+    require_single_device_swap_filesystem || exit 1
     RESUME_OFFSET=$(sudo btrfs inspect-internal map-swapfile -r "$SWAP_FILE" 2>/dev/null)
     if [[ -n $RESUME_OFFSET ]]; then
       echo "Fixing empty resume_offset ($RESUME_OFFSET)"
@@ -94,7 +113,9 @@ if ! $FORCE; then
   fi
 fi
 
-SWAP_SUBVOLUME="/swap"
+if [[ ! -f $RESUME_DROP_IN ]]; then
+  require_single_device_swap_filesystem || exit 1
+fi
 
 # Create btrfs subvolume for swap
 if ! sudo btrfs subvolume show "$SWAP_SUBVOLUME" &>/dev/null; then
