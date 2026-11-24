@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Compare firmware evidence for the Surface Laptop Ultra GPU's carveouts."""
+
+import argparse
+from dataclasses import dataclass
+from pathlib import Path
+import re
+import struct
+import sys
+
+# IORT node types from Arm DEN0049.
+PCI_ROOT, SMMU, SMMUV3, RMR = 2, 3, 4, 6
+
+# Inclusive physical intervals mapped by n1x_carveout_memmap.
+HELPER_RANGES = ((0xA1600000, 0xB7FFFFFF), (0x200000000, 0x2FFFFFFFF))
+
+
+@dataclass
+class Node:
+    kind: int
+    revision: int
+    body: bytes
+    maps_at: int
+    mappings: tuple
+
+
+def parse_iort(data):
+    if len(data) < 48 or data[:4] != b"IORT":
+        raise ValueError("missing IORT header")
+    length, revision = struct.unpack_from("<IB", data, 4)
+    if length != len(data) or sum(data) % 256:
+        raise ValueError("IORT length or checksum is invalid")
+    if revision not in (5, 6):
+        raise ValueError(f"unsupported IORT revision {revision}")
+    count, offset = struct.unpack_from("<II", data, 36)
+    if offset < 48:
+        raise ValueError("invalid IORT node offset")
+    nodes = {}
+    for _ in range(count):
+        if offset + 16 > length:
+            raise ValueError("truncated IORT node header")
+        kind, size, rev, _, maps, maps_at = struct.unpack_from("<BHBIII", data, offset)
+        if size < 16 or offset + size > length:
+            raise ValueError("invalid IORT node length")
+        if maps and (maps_at < 16 or maps_at + 20 * maps > size):
+            raise ValueError("IORT mapping array is outside its node")
+        body = data[offset:offset + size]
+        mappings = tuple(struct.unpack_from("<5I", body, maps_at + 20 * i) for i in range(maps))
+        nodes[offset] = Node(kind, rev, body, maps_at, mappings)
+        offset += size
+    if offset != length:
+        raise ValueError("unexpected data after the IORT node array")
+    return nodes
+
+
+def gpu_route(nodes, segment, requester):
+    roots = []
+    for node in nodes.values():
+        if node.kind != PCI_ROOT:
+            continue
+        if len(node.body) < 32 or (node.mappings and node.maps_at < 32):
+            raise ValueError("truncated PCI root complex")
+        if struct.unpack_from("<I", node.body, 28)[0] == segment:
+            roots.append(node)
+    if len(roots) != 1:
+        raise ValueError("PCI segment does not have a unique IORT root complex")
+    routes = set()
+    for first, count, output, target, flags in roots[0].mappings:
+        if flags not in (0, 1) or first + count > 0xFFFF:
+            raise ValueError("unsupported PCI root complex ID mapping")
+        if flags == 0 and not first <= requester <= first + count:
+            continue
+        parent = nodes.get(target)
+        if parent is None:
+            raise ValueError("PCI mapping points outside the IORT node array")
+        if parent.kind == 0:  # An ITS mapping describes MSI delivery.
+            continue
+        sid = output if flags else output + requester - first
+        if parent.kind not in (SMMU, SMMUV3) or sid > 0xFFFFFFFF:
+            raise ValueError("requester has an unsupported SMMU mapping")
+        routes.add((target, sid))
+    if len(routes) != 1:
+        raise ValueError("requester does not map to a unique SMMU stream")
+    target, sid = routes.pop()
+    smmu = nodes[target]
+    if len(smmu.body) < 24 or (smmu.mappings and smmu.maps_at < 24):
+        raise ValueError("truncated SMMU base address")
+    base, = struct.unpack_from("<Q", smmu.body, 16)
+    return target, (smmu.kind, base, sid)
+
+
+def gpu_ranges(nodes, target, sid):
+    ranges = set()
+    for node in nodes.values():
+        if node.kind != RMR:
+            continue
+        if node.revision not in (2, 3) or not node.mappings or node.maps_at < 28:
+            raise ValueError("unsupported or missing RMR mapping")
+        matches = []
+        for _, count, first, parent, flags in node.mappings:
+            if (parent not in nodes or nodes[parent].kind not in (SMMU, SMMUV3)
+                    or flags or first + count > 0xFFFFFFFF):
+                raise ValueError("invalid RMR stream mapping")
+            if parent == target and first <= sid <= first + count:
+                matches.append((first, first + count))
+        if not matches:
+            continue
+        flags, count, start = struct.unpack_from("<III", node.body, 16)
+        end = start + 20 * count
+        maps_end = node.maps_at + 20 * len(node.mappings)
+        if (not count or start < 28 or end > len(node.body)
+                or start < maps_end and node.maps_at < end):
+            raise ValueError("invalid RMR descriptor array")
+        for offset in range(start, end, 20):
+            base, size, _ = struct.unpack_from("<QQI", node.body, offset)
+            if not size or base + size > 1 << 64:
+                raise ValueError("invalid RMR physical interval")
+            for first, last in matches:
+                ranges.add((base, base + size - 1, flags, first, last))
+    return tuple(sorted(ranges))
+
+
+def ram_intervals(path):
+    ram = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        match = re.fullmatch(r"\s*([0-9a-fA-F]+)-([0-9a-fA-F]+) : (.+)", line)
+        if not match:
+            raise ValueError("malformed /proc/iomem line")
+        first, last = (int(value, 16) for value in match.groups()[:2])
+        if first > last or last >= 1 << 64:
+            raise ValueError("invalid /proc/iomem interval")
+        if match[3] == "System RAM":
+            ram.append((first, last))
+    if not ram or any(last == 0 for _, last in ram):
+        raise ValueError("System RAM addresses are unavailable or masked")
+    return sorted(ram)
+
+
+def describe_interval(interval):
+    return f"{interval[0]:#x}-{interval[1]:#x}"
+
+
+def ram_overlap(first, last, ram):
+    return tuple((max(first, lo), min(last, hi)) for lo, hi in ram if lo <= last and hi >= first)
+
+
+def evidence(label, iort, iomem, segment, requester):
+    nodes = parse_iort(iort.read_bytes())
+    target, route = gpu_route(nodes, segment, requester)
+    kind, base, sid = route
+    print(f"{label}: segment {segment:04x}, requester {requester:#06x} -> "
+          f"{'SMMUv3' if kind == SMMUV3 else 'SMMUv1/v2'} {base:#x}, stream {sid:#x}")
+    ranges = gpu_ranges(nodes, target, sid)
+    ram = ram_intervals(iomem)
+    overlaps = []
+    for first, last, flags, sid_first, sid_last in ranges:
+        hits = ram_overlap(first, last, ram)
+        print(f"  RMR {describe_interval((first, last))}, flags {flags:#x}, "
+              f"stream range {describe_interval((sid_first, sid_last))}, "
+              f"System RAM overlap: {', '.join(map(describe_interval, hits)) or 'none listed'}")
+        overlaps.append(hits)
+    if not ranges:
+        print("  No RMR associated with this SMMU stream")
+    helper_hits = tuple(ram_overlap(first, last, ram) for first, last in HELPER_RANGES)
+    for interval, hits in zip(HELPER_RANGES, helper_hits):
+        print(f"  Helper {describe_interval(interval)}, System RAM overlap: "
+              f"{', '.join(map(describe_interval, hits)) or 'none listed'}")
+    return route, ranges, tuple(overlaps), helper_hits
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("before_iort", type=Path)
+    parser.add_argument("before_iomem", type=Path)
+    parser.add_argument("after_iort", type=Path)
+    parser.add_argument("after_iomem", type=Path)
+    parser.add_argument("--gpu", default="000f:01:00.0", help="PCI domain:bus:device.function")
+    args = parser.parse_args()
+    bdf = re.fullmatch(r"([0-9a-fA-F]{4}):([0-9a-fA-F]{2}):([01][0-9a-fA-F])\.([0-7])", args.gpu)
+    if not bdf:
+        parser.error("--gpu expects PCI domain:bus:device.function")
+    segment, bus, device, function = (int(value, 16) for value in bdf.groups())
+    requester = (bus << 8) | (device << 3) | function
+
+    snapshots = []
+    for label, iort, iomem in (("Before", args.before_iort, args.before_iomem),
+                               ("After", args.after_iort, args.after_iomem)):
+        try:
+            snapshots.append(evidence(label, iort, iomem, segment, requester))
+        except (OSError, UnicodeError, ValueError) as error:
+            # OSError may contain a private path. The label identifies the affected input pair.
+            reason = error.strerror if isinstance(error, OSError) else str(error)
+            print(f"{label}: unknown ({reason})", file=sys.stderr)
+    if len(snapshots) != 2:
+        return 2
+    before, after = snapshots
+    changed = before != after
+    if changed:
+        print("Changed: " + ", ".join(
+            name for name, old, new in zip(
+                ("SMMU route", "GPU RMRs", "RMR System RAM overlap", "helper System RAM overlap"),
+                before, after,
+            ) if old != new
+        ))
+    if any(before[3]) or any(after[3]):
+        print("Helper range overlaps System RAM in at least one capture")
+        return 1
+    if changed:
+        return 1
+    if not before[1]:
+        print("Unknown: both captures lack an RMR for this GPU stream")
+        return 2
+    print("Unchanged: selected IORT mapping, RMRs, and listed System RAM overlaps")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
