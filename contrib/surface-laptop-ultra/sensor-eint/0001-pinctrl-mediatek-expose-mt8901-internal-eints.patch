@@ -1,0 +1,100 @@
+From 54b146e39b225dabc1617340baaea01fe087ee12 Mon Sep 17 00:00:00 2001
+From: Teo Casares <teo-casares@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 13:42:28 -0500
+Subject: [PATCH] pinctrl: mediatek: expose MT8901 internal EINTs to ACPI
+
+ACPI GpioInt on the Surface Laptop Ultra resolves GIO0 offset 190 through the GPIO descriptor table. MT8901 already maps the internal EINTs after the physical GPIO range, but its GPIO descriptor table stops at line 181.
+
+Represent those lines as virtual EINTs. Accept their fixed input direction and keep pin configuration away from physical pad tables, including the MT8901 per-pad bias type table.
+---
+ drivers/pinctrl/mediatek/pinctrl-mtk-mt8901.h | 35 +++++++++++++++++++
+ drivers/pinctrl/mediatek/pinctrl-paris.c      |  7 ++++
+ 2 files changed, 42 insertions(+)
+
+diff --git a/drivers/pinctrl/mediatek/pinctrl-mtk-mt8901.h b/drivers/pinctrl/mediatek/pinctrl-mtk-mt8901.h
+index fc64fc6..7e025b0 100644
+--- a/drivers/pinctrl/mediatek/pinctrl-mtk-mt8901.h
++++ b/drivers/pinctrl/mediatek/pinctrl-mtk-mt8901.h
+@@ -11,6 +11,10 @@
+ 
+ #define INVALID_BASE	0xFF
+ 
++#define MT8901_VIRTUAL_EINT(n) \
++	MTK_PIN(n, "veint" #n, MTK_EINT_FUNCTION(0, n), DRV_GRP4, \
++		MTK_FUNCTION(0, NULL))
++
+ static const struct mtk_pin_desc mtk_pins_mt8901[] = {
+ 	MTK_PIN(
+ 		0, "GPIO0",
+@@ -1913,8 +1917,39 @@ static const struct mtk_pin_desc mtk_pins_mt8901[] = {
+ 		MTK_FUNCTION(0, "B_GPIO181"),
+ 		MTK_FUNCTION(1, "O_GPU_PWRGOOD")
+ 	),
++
++	/* Internal EINTs use their line number as the ACPI GPIO offset. */
++	MT8901_VIRTUAL_EINT(182),
++	MT8901_VIRTUAL_EINT(183),
++	MT8901_VIRTUAL_EINT(184),
++	MT8901_VIRTUAL_EINT(185),
++	MT8901_VIRTUAL_EINT(186),
++	MT8901_VIRTUAL_EINT(187),
++	MT8901_VIRTUAL_EINT(188),
++	MT8901_VIRTUAL_EINT(189),
++	MT8901_VIRTUAL_EINT(190),
++	MT8901_VIRTUAL_EINT(191),
++	MT8901_VIRTUAL_EINT(192),
++	MT8901_VIRTUAL_EINT(193),
++	MT8901_VIRTUAL_EINT(194),
++	MT8901_VIRTUAL_EINT(195),
++	MT8901_VIRTUAL_EINT(196),
++	MT8901_VIRTUAL_EINT(197),
++	MT8901_VIRTUAL_EINT(198),
++	MT8901_VIRTUAL_EINT(199),
++	MT8901_VIRTUAL_EINT(200),
++	MT8901_VIRTUAL_EINT(201),
++	MT8901_VIRTUAL_EINT(202),
++	MT8901_VIRTUAL_EINT(203),
++	MT8901_VIRTUAL_EINT(204),
++	MT8901_VIRTUAL_EINT(205),
++	MT8901_VIRTUAL_EINT(206),
++	MT8901_VIRTUAL_EINT(207),
++	MT8901_VIRTUAL_EINT(208),
+ };
+ 
++#undef MT8901_VIRTUAL_EINT
++
+ static struct mtk_eint_pin eint_pins_mt8901[] = {
+ 	MTK_EINT_PIN(0, 0, 16, 0),
+ 	MTK_EINT_PIN(1, 0, 17, 0),
+diff --git a/drivers/pinctrl/mediatek/pinctrl-paris.c b/drivers/pinctrl/mediatek/pinctrl-paris.c
+index 852afec..db96afb 100644
+--- a/drivers/pinctrl/mediatek/pinctrl-paris.c
++++ b/drivers/pinctrl/mediatek/pinctrl-paris.c
+@@ -136,6 +136,8 @@ static int mtk_pinconf_get(struct pinctrl_dev *pctldev,
+ 
+ 	if (pin >= hw->soc->npins)
+ 		return -EINVAL;
++	if (mtk_is_virt_gpio(hw, pin))
++		return -ENOTSUPP;
+ 
+ 	desc = (const struct mtk_pin_desc *)&hw->soc->pins[pin];
+ 
+@@ -271,6 +273,8 @@ static int mtk_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
+ 
+ 	if (pin >= hw->soc->npins)
+ 		return -EINVAL;
++	if (mtk_is_virt_gpio(hw, pin))
++		return -ENOTSUPP;
+ 
+ 	desc = (const struct mtk_pin_desc *)&hw->soc->pins[pin];
+ 
+@@ -902,6 +906,9 @@ static int mtk_gpio_direction_input(struct gpio_chip *chip, unsigned int gpio)
+ {
+ 	struct mtk_pinctrl *hw = gpiochip_get_data(chip);
+ 
++	if (mtk_is_virt_gpio(hw, gpio))
++		return 0;
++
+ 	return mtk_pinmux_gpio_set_direction(hw->pctrl, NULL, gpio, true);
+ }
+ 
